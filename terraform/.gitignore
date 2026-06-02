@@ -1,0 +1,14 @@
+# Estado local
+*.tfstate
+*.tfstate.backup
+.terraform.tfstate.lock.info
+
+# Diretório de plugins e módulos baixados
+.terraform/
+
+# Arquivos de variáveis com valores sensíveis
+*.tfvars
+*.tfvars.json
+
+# Plano de execução (pode conter valores sensíveis)
+*.tfplan
