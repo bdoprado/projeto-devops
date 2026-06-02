@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import type { Capacitacao } from '../types/Capacitacao';
 
 interface Props {
@@ -16,21 +16,17 @@ const camposVazios = {
 };
 
 export function CapacitacaoForm({ onSave, emEdicao, onCancelar }: Props) {
-  const [campos, setCampos] = useState(camposVazios);
-
-  useEffect(() => {
-    if (emEdicao) {
-      setCampos({
-        titulo: emEdicao.titulo,
-        descricao: emEdicao.descricao,
-        data: emEdicao.data,
-        cargaHoraria: emEdicao.cargaHoraria,
-        instrutor: emEdicao.instrutor,
-      });
-    } else {
-      setCampos(camposVazios);
-    }
-  }, [emEdicao]);
+  const [campos, setCampos] = useState(
+    emEdicao
+      ? {
+          titulo: emEdicao.titulo,
+          descricao: emEdicao.descricao,
+          data: emEdicao.data,
+          cargaHoraria: emEdicao.cargaHoraria,
+          instrutor: emEdicao.instrutor,
+        }
+      : camposVazios,
+  );
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
