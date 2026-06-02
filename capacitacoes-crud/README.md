@@ -1,73 +1,69 @@
-# React + TypeScript + Vite
+# Capacitações CRUD
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicação frontend de gerenciamento de capacitações, desenvolvida com React, TypeScript e Vite. Os dados são persistidos localmente via `localStorage`, sem necessidade de backend.
 
-Currently, two official plugins are available:
+## Funcionalidades
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Cadastrar nova capacitação (título, instrutor, data, carga horária e descrição)
+- Listar todas as capacitações em tabela
+- Editar um registro existente
+- Excluir um registro
+- Persistência automática no `localStorage` do navegador
 
-## React Compiler
+## Tecnologias
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Tecnologia | Uso |
+|---|---|
+| React 19 | Interface e gerenciamento de estado |
+| TypeScript | Tipagem estática |
+| Vite | Bundler e servidor de desenvolvimento |
+| Jest + ts-jest | Execução dos testes |
+| Testing Library | Testes de componentes React |
 
-## Expanding the ESLint configuration
+## Estrutura do projeto
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+src/
+├── components/
+│   ├── CapacitacaoForm.tsx       # Formulário de criação e edição
+│   ├── CapacitacaoForm.test.tsx
+│   ├── CapacitacaoTable.tsx      # Tabela de listagem
+│   └── CapacitacaoTable.test.tsx
+├── services/
+│   ├── capacitacaoStorage.ts     # CRUD sobre localStorage
+│   └── capacitacaoStorage.test.ts
+├── types/
+│   └── Capacitacao.ts            # Interface do modelo
+├── App.tsx
+├── App.css
+└── main.tsx
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Pré-requisitos
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- Node.js 18+
+- npm 9+
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Instalação
+
+```bash
+npm install
 ```
+
+## Scripts disponíveis
+
+| Comando | Descrição |
+|---|---|
+| `npm run dev` | Inicia o servidor de desenvolvimento |
+| `npm run build` | Gera o build de produção |
+| `npm test` | Executa os testes com Jest |
+| `npm run lint` | Verifica o código com ESLint |
+| `npm run preview` | Visualiza o build de produção localmente |
+
+## Executando os testes
+
+```bash
+npm test
+```
+
+A suíte cobre o serviço de storage (operações de CRUD no `localStorage`) e os dois componentes principais (renderização, submissão de formulário e interações de edição/exclusão). Todos os testes rodam em ambiente jsdom, sem necessidade de navegador.
