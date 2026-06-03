@@ -3,7 +3,7 @@
 ## Sumário
 
 1. [Descrição do projeto](#1-descrição-do-projeto)
-2. [Plano de integração contínua](#2-plano-de-integração-contínua)
+2. [Integração e entrega contínua](#2-integração-e-entrega-contínua)
 3. [Especificação da infraestrutura](#3-especificação-da-infraestrutura)
 
 ---
@@ -42,28 +42,29 @@ O **Capacitações CRUD** é uma aplicação web frontend desenvolvida em React 
 
 ---
 
-## 2. Plano de integração contínua
+## 2. Integração e entrega contínua
 
 ### Visão geral do pipeline
 
-O pipeline é definido em GitHub Actions e possui dois jobs distintos: **CI** (executado em todo push e pull request) e **Deploy** (executado apenas na branch `main`, após CI aprovado).
+O pipeline é definido em dois workflows GitHub Actions separados: **CI** (executado em todo push e pull request para `main`) e **CD** (executado automaticamente quando o workflow CI conclui com sucesso na branch `main`).
 
 ```
-Push / PR
+Push / PR para main
     │
     ▼
 ┌─────────────────────────────────┐
-│  Job: ci                        │
+│  Workflow: CI                   │
 │  ├── Checkout                   │
 │  ├── Setup Node 20              │
 │  ├── npm ci                     │
 │  ├── npm run lint               │
 │  └── npm test                   │
 └─────────────────────────────────┘
+    │ (workflow_run: completed + success)
     │ (apenas branch main)
     ▼
 ┌─────────────────────────────────┐
-│  Job: deploy                    │
+│  Workflow: CD                   │
 │  ├── Checkout                   │
 │  ├── Setup Node 20              │
 │  ├── npm ci                     │
@@ -74,12 +75,12 @@ Push / PR
 └─────────────────────────────────┘
 ```
 
-### Arquivo de workflow
+### Arquivos de workflow
 
-**`.github/workflows/ci-cd.yml`**
+**`.github/workflows/ci.yml`**
 
 ```yaml
-name: CI/CD
+name: CI
 
 on:
   push:
@@ -96,10 +97,10 @@ jobs:
         working-directory: capacitacoes-crud
 
     steps:
-      - name: Checkout
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -114,21 +115,33 @@ jobs:
 
       - name: Testes
         run: npm test
+```
 
+**`.github/workflows/cd.yml`**
+
+```yaml
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+jobs:
   deploy:
     name: Build e Deploy
     runs-on: ubuntu-latest
-    needs: ci
-    if: github.ref == 'refs/heads/main'
+    if: github.event.workflow_run.conclusion == 'success'
     defaults:
       run:
         working-directory: capacitacoes-crud
 
     steps:
-      - name: Checkout
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -148,11 +161,10 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Publicar arquivos no S3
+      - name: Publicar no S3
         run: |
           aws s3 sync dist/ s3://${{ secrets.S3_BUCKET_NAME }} \
             --delete \
-            --cache-control "public, max-age=31536000, immutable" \
             --exclude "index.html"
           aws s3 cp dist/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache, no-store, must-revalidate"
@@ -163,8 +175,6 @@ jobs:
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/*"
 ```
-
-> **Nota sobre cache:** assets com hash no nome (gerados pelo Vite) recebem cache longo (`max-age=31536000`). O `index.html` nunca é cacheado, garantindo que o usuário sempre receba a versão mais recente.
 
 ### Secrets necessários no repositório
 
@@ -210,6 +220,7 @@ jobs:
 | Nome do bucket | `capacitacoes-crud-<account-id>` (único globalmente) |
 | Região | `us-east-1` |
 | Acesso público | **Bloqueado** (Block Public Access habilitado) |
+| Criptografia | AES-256 (padrão AWS, habilitada automaticamente) |
 | Versionamento | Desabilitado (sem necessidade para arquivos estáticos com hash) |
 | Website hosting | Desabilitado (o roteamento é feito pelo CloudFront) |
 | Política de acesso | Permite `s3:GetObject` apenas para o OAC do CloudFront |
@@ -222,6 +233,7 @@ jobs:
 | Viewer Protocol Policy | `redirect-to-https` |
 | Allowed HTTP Methods | `GET, HEAD` |
 | Cache Policy | `CachingOptimized` (padrão AWS) |
+| Compressão | Habilitada (`compress = true`) |
 | Price Class | `PriceClass_100` (América do Norte e Europa) |
 | Default Root Object | `index.html` |
 | Custom Error Response | 403 e 404 → `/index.html` com status 200 (SPA routing) |
@@ -233,28 +245,12 @@ jobs:
 
 ```
 terraform/
-├── main.tf          # Provider e recursos principais
+├── main.tf          # Provider, versões e recursos principais
 ├── variables.tf     # Variáveis de entrada
-├── outputs.tf       # Valores de saída (bucket, distribuição)
-└── backend.tf       # Configuração do estado remoto
+└── outputs.tf       # Valores de saída (bucket, distribuição, credenciais)
 ```
 
-#### Backend de estado remoto
-
-O estado do Terraform é armazenado remotamente para permitir colaboração e evitar conflitos:
-
-```hcl
-# backend.tf
-terraform {
-  backend "s3" {
-    bucket         = "terraform-state-<account-id>"
-    key            = "capacitacoes-crud/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "terraform-state-lock"
-    encrypt        = true
-  }
-}
-```
+> **Nota:** o estado do Terraform é armazenado localmente em `terraform.tfstate`. Para ambientes colaborativos ou de produção, recomenda-se migrar para um backend remoto (ex: S3 + DynamoDB).
 
 #### Recursos provisionados
 
@@ -262,6 +258,8 @@ terraform {
 # main.tf
 
 terraform {
+  required_version = ">= 1.6"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -315,19 +313,20 @@ resource "aws_cloudfront_distribution" "app" {
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
+    compress               = true
     cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
   }
 
   custom_error_response {
-    error_code            = 403
-    response_code         = 200
-    response_page_path    = "/index.html"
+    error_code         = 403
+    response_code      = 200
+    response_page_path = "/index.html"
   }
 
   custom_error_response {
-    error_code            = 404
-    response_code         = 200
-    response_page_path    = "/index.html"
+    error_code         = 404
+    response_code      = 200
+    response_page_path = "/index.html"
   }
 
   restrictions {
@@ -344,7 +343,8 @@ resource "aws_cloudfront_distribution" "app" {
 # ── Política do bucket (permite apenas o CloudFront via OAC) ─────────────────
 
 resource "aws_s3_bucket_policy" "app" {
-  bucket = aws_s3_bucket.app.id
+  bucket     = aws_s3_bucket.app.id
+  depends_on = [aws_s3_bucket_public_access_block.app]
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -370,7 +370,7 @@ resource "aws_s3_bucket_policy" "app" {
 # ── Usuário IAM para deploy (GitHub Actions) ─────────────────────────────────
 
 resource "aws_iam_user" "deploy" {
-  name = "${var.bucket_name}-deploy"
+  name = "${var.project_name}-deploy"
 }
 
 resource "aws_iam_access_key" "deploy" {
@@ -384,7 +384,7 @@ resource "aws_iam_user_policy" "deploy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "S3Deploy"
+        Sid    = "S3Sync"
         Effect = "Allow"
         Action = [
           "s3:PutObject",
@@ -414,13 +414,19 @@ resource "aws_iam_user_policy" "deploy" {
 # variables.tf
 
 variable "aws_region" {
-  description = "Região AWS"
+  description = "Região AWS onde os recursos serão criados"
   type        = string
   default     = "us-east-1"
 }
 
+variable "project_name" {
+  description = "Nome do projeto, usado como prefixo nos recursos"
+  type        = string
+  default     = "capacitacoes-crud"
+}
+
 variable "bucket_name" {
-  description = "Nome do bucket S3 (deve ser único globalmente)"
+  description = "Nome do bucket S3 — deve ser único globalmente na AWS"
   type        = string
 }
 ```
@@ -441,17 +447,17 @@ output "s3_bucket_name" {
 }
 
 output "cloudfront_distribution_id" {
-  description = "ID da distribuição CloudFront (para invalidação via CI/CD)"
+  description = "ID da distribuição CloudFront — necessário para invalidação no CI/CD"
   value       = aws_cloudfront_distribution.app.id
 }
 
 output "deploy_access_key_id" {
-  description = "Access Key ID do usuário de deploy"
+  description = "AWS_ACCESS_KEY_ID para configurar nos Secrets do GitHub Actions"
   value       = aws_iam_access_key.deploy.id
 }
 
 output "deploy_secret_access_key" {
-  description = "Secret Access Key do usuário de deploy"
+  description = "AWS_SECRET_ACCESS_KEY para configurar nos Secrets do GitHub Actions"
   value       = aws_iam_access_key.deploy.secret
   sensitive   = true
 }
@@ -462,7 +468,7 @@ output "deploy_secret_access_key" {
 ```bash
 cd terraform
 
-# Inicializar o backend e baixar providers
+# Inicializar e baixar providers
 terraform init
 
 # Visualizar o plano de execução
@@ -472,6 +478,7 @@ terraform plan -var="bucket_name=capacitacoes-crud-<account-id>"
 terraform apply -var="bucket_name=capacitacoes-crud-<account-id>"
 
 # Obter as credenciais do usuário de deploy
+terraform output deploy_access_key_id
 terraform output -raw deploy_secret_access_key
 ```
 
