@@ -65,6 +65,7 @@ projeto-devops/
 | Linguagem / framework | TypeScript, React 19, Vite |
 | Testes | Jest + Testing Library |
 | Lint | ESLint |
+| Segurança (scan) | npm audit (SCA) + Trivy (imagem) |
 | CI/CD | GitHub Actions |
 | Containerização | Docker (multi-stage), nginx |
 | Orquestração | Docker Compose |
@@ -85,10 +86,11 @@ O workflow **CI** (`.github/workflows/ci.yml`) é executado em todo `push` e `pu
 1. Checkout do repositório
 2. Setup do Node.js 20 (com cache de `npm`)
 3. `npm ci` — instalação determinística a partir do lockfile
-4. `npm run lint` — análise estática com ESLint
-5. `npm test` — testes unitários e de componente com Jest
+4. `npm audit --audit-level=high` — SCA: scan de vulnerabilidades nas dependências (*shift-left*)
+5. `npm run lint` — análise estática com ESLint
+6. `npm test` — testes unitários e de componente com Jest
 
-O objetivo é **garantir que nenhum código quebrado entre na `main`**: a esteira valida estilo e comportamento antes de qualquer deploy.
+O objetivo é **garantir que nenhum código quebrado ou inseguro entre na `main`**: a esteira valida segurança das dependências, estilo e comportamento antes de qualquer deploy.
 
 ### 2.2 Infraestrutura como Código (Terraform)
 
@@ -120,7 +122,9 @@ O CD possui **dois jobs independentes e paralelos**:
 1. Checkout
 2. Login no **GitHub Container Registry** (`ghcr.io`) usando o `GITHUB_TOKEN`
 3. `docker/metadata-action` gera tags (`latest` + `sha-<commit>`)
-4. `docker/build-push-action` builda a imagem multi-stage e publica no GHCR, com **cache de camadas via GitHub Actions** (`type=gha`)
+4. **Build** da imagem multi-stage, carregada localmente (`load`), com **cache de camadas via GitHub Actions** (`type=gha`)
+5. **Scan de segurança com Trivy** — bloqueia o pipeline se houver vulnerabilidade CRITICAL/HIGH corrigível
+6. **Push** para o GHCR — executado **somente se o scan passar**
 
 Assim, **todo commit aprovado na `main` gera simultaneamente**: (a) o deploy estático em produção e (b) uma imagem de container versionada e rastreável (tag = hash do commit), pronta para ser executada em qualquer ambiente compatível com Docker.
 
@@ -133,12 +137,13 @@ Assim, **todo commit aprovado na `main` gera simultaneamente**: (a) o deploy est
 A aplicação é containerizada com um **Dockerfile multi-stage** (`capacitacoes-crud/Dockerfile`):
 
 - **Estágio 1 (`build`)** — `node:20-alpine`: instala dependências (`npm ci`) e gera o build de produção (`npm run build`).
-- **Estágio 2 (`runtime`)** — `nginx:1.27-alpine`: copia **apenas** os artefatos estáticos de `dist/` e a configuração do nginx.
+- **Estágio 2 (`runtime`)** — `nginx:1.27-alpine`: aplica patches de segurança do SO (`apk upgrade --no-cache`) e copia **apenas** os artefatos estáticos de `dist/` e a configuração do nginx.
 
 Benefícios do multi-stage:
 - A imagem final **não contém Node.js, código-fonte nem `node_modules`** — somente o nginx e os arquivos estáticos.
-- Imagem final enxuta: **~74 MB** (medido localmente).
+- Imagem final enxuta: **~93 MB** (medido localmente, já com os pacotes do SO atualizados).
 - `.dockerignore` evita enviar `node_modules`, `.git` etc. para o contexto de build.
+- O `apk upgrade` zera as vulnerabilidades CRITICAL/HIGH corrigíveis detectadas pelo scan de imagem do pipeline (ver §3.5).
 
 O `nginx.conf` configura:
 - **Roteamento SPA** — `try_files $uri $uri/ /index.html` (qualquer rota cai no `index.html`).
@@ -171,16 +176,25 @@ Em `scripts/`, dois scripts encapsulam o deploy baseado em containers:
 
 ### 3.5 Segurança em DevOps
 
-Práticas de segurança aplicadas em cada camada:
+Adotou-se a abordagem **DevSecOps**: a segurança é tratada em cada camada e **automatizada no pipeline** (*shift-left* — detecção o mais cedo possível).
 
 | Camada | Prática |
 |---|---|
 | **Infraestrutura** | Bucket S3 privado (sem acesso público); acesso somente via CloudFront/OAC; HTTPS obrigatório (`redirect-to-https`). |
 | **IAM** | Usuário de deploy com política de **menor privilégio**. |
 | **Pipeline** | Credenciais via **GitHub Secrets** (nunca no código); `GITHUB_TOKEN` efêmero com escopo `packages: write` apenas no job que precisa. |
-| **Container** | Imagem base Alpine (superfície de ataque reduzida); imagem sem código-fonte nem toolchain de build; `server_tokens off` (não expõe a versão do nginx). |
+| **Container** | Imagem base Alpine (superfície de ataque reduzida); `apk upgrade` aplica patches do SO; imagem sem código-fonte nem toolchain de build; `server_tokens off` (não expõe a versão do nginx). |
 | **Aplicação (HTTP)** | Headers de segurança: `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` — aplicados em **todas** as rotas via `include` do `security-headers.conf`. |
 | **Dependências** | `npm ci` a partir do lockfile (builds determinísticos e auditáveis). |
+
+**Varredura automática de vulnerabilidades (scan) no pipeline:**
+
+| Onde | Ferramenta | O que faz | Política |
+|---|---|---|---|
+| **CI** (todo push/PR) | `npm audit` | Análise de Composição de Software (SCA) — vulnerabilidades nas dependências npm | Falha o build em **high/critical** (`--audit-level=high`); moderadas só são reportadas |
+| **CD** (antes do push) | **Trivy** | Scan da imagem Docker (pacotes do SO) | **Bloqueia o push** para o GHCR se houver **CRITICAL/HIGH corrigível** (`--exit-code 1 --ignore-unfixed`) |
+
+> Durante o desenvolvimento, o Trivy detectou vulnerabilidades CRITICAL/HIGH corrigíveis nos pacotes do SO da imagem base (`libxml2`, `musl`, `zlib`, `nghttp2`). A resposta de DevSecOps **não** foi desligar o gate, e sim **corrigir** a imagem com `apk upgrade` — após o qual o scan passou com **0 vulnerabilidades** (evidência na §5).
 
 ### 3.6 Testes
 
@@ -207,7 +221,8 @@ flowchart TD
     REPO --> CI{"⚙️ Workflow CI<br/>(push / PR)"}
     CI --> CI1["Checkout + Setup Node 20"]
     CI1 --> CI2["npm ci"]
-    CI2 --> CI3["npm run lint"]
+    CI2 --> CIA["🔒 npm audit (SCA)"]
+    CIA --> CI3["npm run lint"]
     CI3 --> CI4["npm test (Jest)"]
     CI4 --> GATE{"CI passou?"}
 
@@ -224,7 +239,9 @@ flowchart TD
     CF --> USER["🌐 Usuário final"]
 
     DOCKER --> D1["docker build (multi-stage)"]
-    D1 --> D2["push → ghcr.io<br/>tags: latest + sha"]
+    D1 --> DSCAN{"🔒 Scan Trivy<br/>CRITICAL/HIGH?"}
+    DSCAN -- "❌ Vulnerável" --> FAIL
+    DSCAN -- "✅ Limpo" --> D2["push → ghcr.io<br/>tags: latest + sha"]
     D2 --> GHCR["📦 GitHub Container Registry"]
 
     GHCR --> RUN["🐳 docker compose up<br/>(deploy-local.sh)"]
@@ -243,10 +260,10 @@ flowchart TD
 ### Legenda do fluxo
 
 1. O desenvolvedor faz `push`/PR para a `main`.
-2. O **CI** valida lint + testes. Se falhar, bloqueia e notifica.
+2. O **CI** valida SCA (`npm audit`) + lint + testes. Se falhar, bloqueia e notifica.
 3. Com sucesso na `main`, o **CD** dispara dois caminhos paralelos:
    - **Estático:** build → S3 → invalidação CloudFront → usuário final via CDN/HTTPS.
-   - **Container:** build multi-stage → push para o GHCR → executável via Docker Compose.
+   - **Container:** build multi-stage → **scan Trivy** → push para o GHCR (só se limpo) → executável via Docker Compose.
 4. A **infraestrutura** (S3, CloudFront, IAM) é provisionada e gerida por Terraform.
 
 ---
@@ -264,13 +281,17 @@ Reproduz localmente o que o workflow CI executa a cada `push`/PR: instalação d
 ```bash
 cd capacitacoes-crud
 npm ci
-npm run lint     # ESLint
-npm test         # Jest + Testing Library
+npm audit --audit-level=high   # SCA — scan de dependências (DevSecOps)
+npm run lint                   # ESLint
+npm test                       # Jest + Testing Library
 ```
 
 **Evidência capturada:**
 
 ```text
+$ npm audit --audit-level=high
+(18 vulnerabilidades moderadas reportadas, 0 high/critical → exit 0)
+
 $ npm run lint
 > eslint .
 (sem saída → exit 0, nenhum problema de lint)
@@ -285,7 +306,7 @@ Time:        4.648 s
 Ran all test suites.
 ```
 
-✅ **Gate de qualidade verde:** 20 testes em 3 suítes, lint sem erros. No pipeline, só com esse resultado o CD é liberado.
+✅ **Gate de qualidade verde:** SCA sem high/critical, lint sem erros, 20 testes em 3 suítes. No pipeline, só com esse resultado o CD é liberado.
 
 ### Etapa 2 — Build do artefato containerizado
 
@@ -308,10 +329,35 @@ docker build -t capacitacoes-crud:local capacitacoes-crud
 => naming to docker.io/library/capacitacoes-crud:local
 
 $ docker images capacitacoes-crud:local --format "{{.Repository}}:{{.Tag}}  {{.Size}}"
-capacitacoes-crud:local  73.9MB
+capacitacoes-crud:local  93MB
 ```
 
-✅ **Imagem final de 73.9 MB**, contendo apenas nginx + estáticos — sem Node.js, sem código-fonte, sem `node_modules` (resultado do multi-stage build).
+✅ **Imagem final de 93 MB** (já com os pacotes do SO atualizados), contendo apenas nginx + estáticos — sem Node.js, sem código-fonte, sem `node_modules` (resultado do multi-stage build).
+
+### Etapa 2.1 — Scan de vulnerabilidades da imagem (Trivy)
+
+Antes de publicar, a imagem é escaneada. Este passo é o gate de segurança do CD.
+
+```bash
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 capacitacoes-crud:local
+```
+
+**Evidência capturada (após o `apk upgrade` no Dockerfile):**
+
+```text
+Detected OS: alpine 3.21.3
+[alpine] Detecting vulnerabilities... pkg_num=68
+
+Report Summary
+┌─────────────────────────────────────────┬────────┬─────────────────┐
+│                 Target                  │  Type  │ Vulnerabilities │
+├─────────────────────────────────────────┼────────┼─────────────────┤
+│ capacitacoes-crud:local (alpine 3.21.3) │ alpine │        0        │
+└─────────────────────────────────────────┴────────┴─────────────────┘
+→ exit code 0 (Clean)
+```
+
+✅ **0 vulnerabilidades CRITICAL/HIGH** — o push para o GHCR é liberado. (Sem o `apk upgrade`, o mesmo scan retornava `exit 1`, bloqueando o push — o gate funciona.)
 
 ### Etapa 3 — Orquestração e execução (Docker Compose)
 
@@ -372,10 +418,10 @@ git commit -m "feat: minha mudança"
 git push origin main
 ```
 
-1. **CI** roda lint + testes (Etapa 1). Se falhar, bloqueia e notifica — nada é entregue.
+1. **CI** roda SCA (`npm audit`) + lint + testes (Etapa 1). Se falhar, bloqueia e notifica — nada é entregue.
 2. Com CI verde, o **CD** dispara em paralelo:
    - **Job `deploy`:** `npm run build` → `aws s3 sync` → invalidação do CloudFront → produção via CDN/HTTPS.
-   - **Job `docker`:** build multi-stage → push para `ghcr.io/bdoprado/projeto-devops` com tags `latest` e `sha-<commit>` (Etapas 2–3, no runner).
+   - **Job `docker`:** build multi-stage → **scan Trivy** (Etapa 2.1) → push para `ghcr.io/bdoprado/projeto-devops` com tags `latest` e `sha-<commit>` (só publica se o scan passar).
 
 Publicação manual da imagem (quando necessário) usa o mesmo artefato:
 
@@ -394,9 +440,11 @@ docker compose down
 
 | Etapa | Verificação | Evidência | Resultado |
 |---|---|---|---|
+| 1 | SCA — `npm audit --audit-level=high` | 0 high/critical → exit 0 | ✅ |
 | 1 | Lint (ESLint) | exit 0, sem saída | ✅ |
 | 1 | Testes (Jest) | 20 passed / 3 suites / 4.6s | ✅ |
-| 2 | Build multi-stage | imagem `73.9 MB`, build Vite OK | ✅ |
+| 2 | Build multi-stage | imagem `93 MB`, build Vite OK | ✅ |
+| 2.1 | Scan da imagem (Trivy) | `0` CRITICAL/HIGH após `apk upgrade` | ✅ |
 | 2 | `nginx -t` | `syntax is ok / test is successful` | ✅ |
 | 3 | Orquestração + healthcheck | container `healthy`, porta `8080` | ✅ |
 | 4 | HTTP na raiz | `200` | ✅ |
@@ -414,17 +462,18 @@ O projeto exercitou, de ponta a ponta, os conceitos centrais de DevOps, e dois e
 
 - **Herança de `add_header` no nginx.** Na primeira execução, os headers de segurança **não apareciam** na resposta do `index.html`. Causa: no nginx, `add_header` definido no `server` **não é herdado** por um `location` que possui seus próprios `add_header`; como o `try_files` faz um *redirect interno* para `/index.html` (que tinha um bloco com `Cache-Control`), os headers de segurança eram descartados. **Correção:** centralizar os headers em `security-headers.conf` e incluí-los (`include`) explicitamente em cada `location`. *Aprendizado: configuração de servidor exige entender o modelo de herança, não só a sintaxe.*
 - **`localhost` vs IPv4 no healthcheck.** O container subia como `unhealthy` apesar de responder `200` pela porta publicada. Causa: o healthcheck usava `localhost`, que dentro do container resolve para IPv6 (`::1`), mas o nginx escutava apenas em IPv4 (`listen 80`) → *connection refused*. **Correção:** usar `127.0.0.1` no healthcheck. *Aprendizado: dentro do container, "funciona no host" não basta — a verificação precisa refletir a interface real onde o serviço escuta.*
+- **Scan de imagem reprovando o build (DevSecOps na prática).** Ao integrar o Trivy, o scan **bloqueou** a imagem por vulnerabilidades CRITICAL/HIGH corrigíveis nos pacotes do SO da base (`libxml2`, `musl`, `zlib`, `nghttp2`). **Correção:** em vez de afrouxar o gate, adicionar `apk upgrade --no-cache` ao Dockerfile — após o qual o scan retornou **0 vulnerabilidades**. *Aprendizado: o valor de um gate de segurança é justamente reprovar; a resposta certa é corrigir o artefato, não relaxar a regra.*
 
 Demonstrações de domínio dos demais conceitos:
 
 | Conceito DevOps | Como foi demonstrado |
 |---|---|
-| Integração Contínua | CI com lint + 20 testes como gate (bloqueia o CD se falhar) |
+| Integração Contínua | CI com SCA + lint + 20 testes como gate (bloqueia o CD se falhar) |
 | Entrega Contínua | CD automático via `workflow_run`, só após CI verde |
-| Containerização | Dockerfile multi-stage, imagem mínima (73.9 MB) sem toolchain |
+| Containerização | Dockerfile multi-stage, imagem mínima (93 MB) sem toolchain, patches de SO |
 | Orquestração | Compose com healthcheck, restart e limites de recursos |
 | IaC | Terraform descrevendo S3 + CloudFront + IAM reproduzíveis |
-| Segurança | Menor privilégio, secrets, bucket privado, HTTPS, headers HTTP, imagem Alpine |
+| Segurança (DevSecOps) | Scan automatizado (npm audit + Trivy), menor privilégio, secrets, bucket privado, HTTPS, headers HTTP, imagem Alpine patcheada |
 | Monitoramento/Logging | Healthcheck + logs do nginx no `stdout`/`stderr` |
 | Gerência de configuração | Tudo versionado: app, infra, pipeline; imagens etiquetadas por commit |
 
@@ -434,7 +483,6 @@ Algumas limitações foram **observadas com evidência** durante o trabalho, nã
 
 | # | Limitação | Evidência / fundamento |
 |---|---|---|
-| L1 | **Sem varredura de dependências** no pipeline | `npm audit` local acusou **18 vulnerabilidades moderadas** — hoje nada no CI/CD detectaria isso automaticamente. |
 | L2 | **Estado do Terraform local** (`terraform.tfstate`) | Impede colaboração (sem *lock*) e arrisca perda/divergência de estado. |
 | L3 | **Imagem do GHCR sem ambiente de execução permanente** | Produção usa S3/CloudFront; a imagem é portátil mas não há orquestrador de runtime gerenciado rodando-a. |
 | L4 | **Sem observabilidade centralizada** nem *staging* | Não há dashboards/alertas agregados nem ambiente intermediário para validar antes da produção. |
@@ -444,7 +492,7 @@ Algumas limitações foram **observadas com evidência** durante o trabalho, nã
 
 ### 6.3 Avaliação geral
 
-O pipeline cumpre o objetivo central de DevOps: **levar uma mudança de código à produção de forma automatizada, testada, rastreável e segura**, sem passos manuais. A combinação de dois modelos de entrega (estático S3/CloudFront + artefato containerizado no GHCR) demonstra domínio de paradigmas distintos. As limitações restantes são, em sua maioria, de **maturidade operacional** (observabilidade, scanning, staging) — não de funcionamento — e cada uma tem um caminho de melhoria viável, detalhado a seguir.
+O pipeline cumpre o objetivo central de DevOps: **levar uma mudança de código à produção de forma automatizada, testada, rastreável e segura**, sem passos manuais. A combinação de dois modelos de entrega (estático S3/CloudFront + artefato containerizado no GHCR) demonstra domínio de paradigmas distintos, e a varredura de segurança (SCA + scan de imagem) já integra o fluxo (*shift-left*). As limitações restantes são, em sua maioria, de **maturidade operacional** (observabilidade, staging, *backend* remoto de estado) — não de funcionamento — e cada uma tem um caminho de melhoria viável, detalhado a seguir.
 
 ---
 
@@ -452,12 +500,14 @@ O pipeline cumpre o objetivo central de DevOps: **levar uma mudança de código 
 
 Cada melhoria responde diretamente a uma limitação da seção 6.2 e foi priorizada por **relação esforço × impacto**, partindo dos aprendizados do projeto.
 
+> **Já implementado nesta fase:** *scan* de segurança no pipeline (`npm audit` no CI + **Trivy** no CD, bloqueando o push) — fechou a lacuna de varredura automática de vulnerabilidades. *Próxima evolução natural: adicionar **Dependabot** para atualização contínua das dependências e tratar as 18 vulnerabilidades moderadas restantes.*
+
 | Prioridade | Melhoria | Resolve | Esforço | Impacto |
 |---|---|---|---|---|
-| 🔴 Alta | **Scan de segurança no CI** — `npm audit --audit-level=high`, Trivy (imagem), Dependabot | L1 | Baixo | Alto |
 | 🔴 Alta | **Smoke test pós-deploy** — `curl` na URL de produção após a invalidação, falhando o job se ≠ 200 | L5 | Baixo | Alto |
 | 🔴 Alta | **Backend remoto do Terraform** (S3 + DynamoDB lock) | L2 | Baixo | Alto |
 | 🟡 Média | **OIDC para a AWS** no lugar de chaves IAM estáticas | L7 | Médio | Alto |
+| 🟡 Média | **Dependabot** + tratar vulnerabilidades moderadas | — | Baixo | Médio |
 | 🟡 Média | **Ambiente de staging** + *deploy preview* por PR | L4 | Médio | Médio |
 | 🟡 Média | **Observabilidade** — CloudWatch (alarmes 4xx/5xx, latência) ou Prometheus + Grafana + Loki | L4 | Médio | Médio |
 | 🟢 Baixa | **Orquestração gerenciada** da imagem (ECS/Fargate ou Kubernetes) com *self-healing* e escala | L3 | Alto | Médio |
@@ -465,7 +515,7 @@ Cada melhoria responde diretamente a uma limitação da seção 6.2 e foi priori
 | 🟢 Baixa | **Testes E2E** (Playwright/Cypress) no pipeline | — | Médio | Médio |
 | 🟢 Baixa | **Releases semânticos** (tag Git → release + rollback simplificado) | — | Baixo | Médio |
 
-**Próximos passos recomendados (curto prazo):** as três melhorias de alta prioridade — scan de dependências, smoke test pós-deploy e backend remoto do Terraform — são de **baixo esforço e alto impacto**, fecham as lacunas mais críticas identificadas com evidência (L1, L5, L2) e seriam o ponto de partida natural de uma Fase 3.
+**Próximos passos recomendados (curto prazo):** as duas melhorias de alta prioridade — smoke test pós-deploy e backend remoto do Terraform — são de **baixo esforço e alto impacto**, fecham as lacunas mais críticas restantes (L5, L2) e seriam o ponto de partida natural de uma Fase 3.
 
 ---
 

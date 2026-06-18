@@ -28,8 +28,13 @@ jobs:
       - name: Instalar dependências
         run: npm ci
 
+      - name: Auditoria de dependências (SCA)
+        # Shift-left: falha apenas em vulnerabilidades high/critical.
+        # As moderadas são reportadas no log sem quebrar o build.
+        run: npm audit --audit-level=high
+
       - name: Lint
         run: npm run lint
 
       - name: Testes
-        run: npm test        
+        run: npm test

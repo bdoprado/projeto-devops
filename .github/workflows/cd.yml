@@ -54,7 +54,7 @@ jobs:
             --paths "/*"
 
   docker:
-    name: Build e Push da imagem (GHCR)
+    name: Scan, Build e Push da imagem (GHCR)
     runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'success'
     permissions:
@@ -84,7 +84,32 @@ jobs:
       - name: Configurar Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build e push da imagem
+      # Build local (load) para que a imagem possa ser escaneada ANTES do push.
+      - name: Build da imagem (carregada localmente)
+        uses: docker/build-push-action@v6
+        with:
+          context: capacitacoes-crud
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Shift-left: bloqueia o push se houver vulnerabilidade CRITICAL/HIGH
+      # com correção disponível na imagem.
+      - name: Scan de vulnerabilidades da imagem (Trivy)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --no-progress \
+            ghcr.io/${{ github.repository }}:latest
+
+      # Só publica no GHCR se o scan acima passar (push usa o cache do build).
+      - name: Push da imagem
         uses: docker/build-push-action@v6
         with:
           context: capacitacoes-crud

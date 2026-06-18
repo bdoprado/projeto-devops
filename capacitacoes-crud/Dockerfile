@@ -14,6 +14,10 @@ RUN npm run build
 # ── Estágio 2: imagem final de runtime (servidor estático) ───────────────────
 FROM nginx:1.27-alpine AS runtime
 
+# Aplica patches de segurança disponíveis nos pacotes do SO (DevSecOps:
+# reduz vulnerabilidades CRITICAL/HIGH detectadas pelo scan de imagem no CD).
+RUN apk upgrade --no-cache
+
 # Configuração do nginx para SPA (roteamento client-side, gzip, headers de segurança)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security-headers.conf /etc/nginx/security-headers.conf
