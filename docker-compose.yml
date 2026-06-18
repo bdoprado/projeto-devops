@@ -1,0 +1,35 @@
+# Orquestração local da aplicação Capacitações CRUD.
+#
+# Uso:
+#   docker compose up -d --build        # build local e sobe o container
+#   docker compose ps                   # status / healthcheck
+#   docker compose logs -f web          # acompanha os logs
+#   docker compose down                 # encerra
+#
+# Para rodar a imagem publicada no GHCR em vez de buildar localmente:
+#   IMAGE=ghcr.io/bdoprado/projeto-devops:latest docker compose up -d
+
+services:
+  web:
+    # Usa a imagem informada em IMAGE (ex.: a publicada no GHCR pelo CD) ou
+    # builda localmente a partir do diretório da aplicação.
+    image: ${IMAGE:-capacitacoes-crud:local}
+    build:
+      context: ./capacitacoes-crud
+      dockerfile: Dockerfile
+    container_name: capacitacoes-crud
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    # Limites de recursos (orquestração) — evita que o container consuma o host
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
