@@ -67,3 +67,31 @@ npm test
 ```
 
 A suíte cobre o serviço de storage (operações de CRUD no `localStorage`) e os dois componentes principais (renderização, submissão de formulário e interações de edição/exclusão). Todos os testes rodam em ambiente jsdom, sem necessidade de navegador.
+
+## Container (Docker)
+
+A aplicação é containerizada com um Dockerfile multi-stage (build com Vite → servida por nginx). A partir da **raiz do repositório**:
+
+```bash
+# Build + run via Docker Compose (sobe em http://localhost:8080)
+docker compose up -d --build
+
+# Ou via script de conveniência
+../scripts/deploy-local.sh
+
+# Encerrar
+docker compose down
+```
+
+A imagem também é buildada e publicada automaticamente no GitHub Container Registry (`ghcr.io`) pelo pipeline de CD a cada commit aprovado na `main`. Para rodar a imagem publicada:
+
+```bash
+IMAGE=ghcr.io/bdoprado/projeto-devops:latest docker compose up -d
+```
+
+## CI/CD e infraestrutura
+
+O ciclo completo de DevOps (CI, CD, containerização, IaC, monitoramento e segurança) está documentado em:
+
+- [`../docs/relatorio-final.md`](../docs/relatorio-final.md) — relatório final, fluxograma e análise
+- [`../docs/planejamento-infraestrutura.md`](../docs/planejamento-infraestrutura.md) — infraestrutura (Terraform, S3, CloudFront)
